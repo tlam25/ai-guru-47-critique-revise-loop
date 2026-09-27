@@ -2,18 +2,31 @@
 
 from pathlib import Path
 import subprocess
+import textwrap
+import unicodedata
 
 from PIL import Image, ImageDraw, ImageFont
 
 
-FONT_PATH = "/usr/local/texlive/2025/texmf-dist/fonts/truetype/public/dejavu/DejaVuSansMono.ttf"
-FONT_BOLD_PATH = "/usr/local/texlive/2025/texmf-dist/fonts/truetype/public/dejavu/DejaVuSansMono-Bold.ttf"
+FONT_PATH = "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf"
+FONT_BOLD_PATH = "/usr/share/fonts/truetype/noto/NotoSansMono-Bold.ttf"
 
 
 def wrap_line(text: str, width: int) -> list[str]:
     if not text:
         return [""]
-    return [text[index : index + width] for index in range(0, len(text), width)]
+    if len(text) <= width:
+        return [text]
+    indent_size = min(len(text) - len(text.lstrip(" ")), 8)
+    return textwrap.wrap(
+        text,
+        width=width,
+        subsequent_indent=" " * indent_size,
+        replace_whitespace=False,
+        drop_whitespace=True,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
 
 
 def run(command: list[str]) -> str:
@@ -26,10 +39,12 @@ def run(command: list[str]) -> str:
         encoding="utf-8",
     )
     shown = " ".join(command)
-    return f"$ {shown}\n{completed.stdout.rstrip()}"
+    output = unicodedata.normalize("NFC", completed.stdout.rstrip())
+    return f"$ {shown}\n{output}"
 
 
 def render(content: str, output_path: Path, title: str) -> None:
+    content = unicodedata.normalize("NFC", content)
     lines: list[str] = []
     for line in content.splitlines():
         lines.extend(wrap_line(line, 93))

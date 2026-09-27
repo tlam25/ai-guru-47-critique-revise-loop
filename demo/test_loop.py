@@ -2,7 +2,23 @@
 
 import unittest
 
-from demo.critique_revise import CHECKLIST, DemoProvider, run_loop
+from demo.critique_revise import (
+    CHECKLIST,
+    DemoProvider,
+    parse_critique_payload,
+    run_loop,
+)
+
+
+def valid_payload() -> dict[str, object]:
+    return {
+        "criteria": [
+            {"name": "Rõ ràng", "passed": True, "comment": "Dễ đọc."},
+            {"name": "Đủ ý", "passed": True, "comment": "Đủ bốn ý."},
+            {"name": "Đúng độ dài", "passed": True, "comment": "Có 110 từ."},
+        ],
+        "summary": "Đạt checklist.",
+    }
 
 
 class LoopTests(unittest.TestCase):
@@ -28,6 +44,43 @@ class LoopTests(unittest.TestCase):
         self.assertIn("Rõ ràng", CHECKLIST[0])
         self.assertIn("Đủ ý", CHECKLIST[1])
         self.assertIn("Đúng độ dài", CHECKLIST[2])
+
+    def test_rejects_empty_criteria(self) -> None:
+        payload = valid_payload()
+        payload["criteria"] = []
+        with self.assertRaises(ValueError):
+            parse_critique_payload(payload)
+
+    def test_rejects_missing_criterion(self) -> None:
+        payload = valid_payload()
+        payload["criteria"] = payload["criteria"][:2]  # type: ignore[index]
+        with self.assertRaises(ValueError):
+            parse_critique_payload(payload)
+
+    def test_rejects_duplicate_criterion(self) -> None:
+        payload = valid_payload()
+        criteria = payload["criteria"]  # type: ignore[assignment]
+        criteria[2] = dict(criteria[0])  # type: ignore[index]
+        with self.assertRaises(ValueError):
+            parse_critique_payload(payload)
+
+    def test_rejects_unknown_criterion_name(self) -> None:
+        payload = valid_payload()
+        payload["criteria"][0]["name"] = "Sáng tạo"  # type: ignore[index]
+        with self.assertRaises(ValueError):
+            parse_critique_payload(payload)
+
+    def test_rejects_non_boolean_passed(self) -> None:
+        payload = valid_payload()
+        payload["criteria"][0]["passed"] = "false"  # type: ignore[index]
+        with self.assertRaises(ValueError):
+            parse_critique_payload(payload)
+
+    def test_rejects_empty_comment(self) -> None:
+        payload = valid_payload()
+        payload["criteria"][0]["comment"] = "   "  # type: ignore[index]
+        with self.assertRaises(ValueError):
+            parse_critique_payload(payload)
 
 
 if __name__ == "__main__":

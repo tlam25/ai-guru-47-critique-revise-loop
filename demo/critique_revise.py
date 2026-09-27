@@ -8,7 +8,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Protocol
 
 
@@ -17,6 +17,36 @@ CHECKLIST = (
     "Đủ ý: có vấn đề, giải pháp, ví dụ và lời kêu gọi hành động.",
     "Đúng độ dài: nằm trong khoảng từ 90 đến 130 từ.",
 )
+CRITERION_NAMES = tuple(item.split(":", 1)[0] for item in CHECKLIST)
+
+CRITIQUE_TEXT_FORMAT = {
+    "type": "json_schema",
+    "name": "critique",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "criteria": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "enum": list(CRITERION_NAMES)},
+                        "passed": {"type": "boolean"},
+                        "comment": {"type": "string"},
+                    },
+                    "required": ["name", "passed", "comment"],
+                    "additionalProperties": False,
+                },
+            },
+            "summary": {"type": "string"},
+        },
+        "required": ["criteria", "summary"],
+        "additionalProperties": False,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -25,15 +55,78 @@ class Criterion:
     passed: bool
     comment: str
 
+    def __post_init__(self) -> None:
+        if self.name not in CRITERION_NAMES:
+            raise ValueError(f"Tên tiêu chí không hợp lệ: {self.name!r}.")
+        if type(self.passed) is not bool:
+            raise ValueError(f"passed của {self.name!r} phải là Boolean.")
+        if not isinstance(self.comment, str) or not self.comment.strip():
+            raise ValueError(f"Nhận xét của {self.name!r} không được rỗng.")
+
 
 @dataclass(frozen=True)
 class Critique:
     criteria: tuple[Criterion, ...]
     summary: str
 
+    def __post_init__(self) -> None:
+        names = tuple(item.name for item in self.criteria)
+        if names != CRITERION_NAMES:
+            raise ValueError(
+                "Critique phải có đúng ba tiêu chí, không thiếu, trùng hoặc sai tên."
+            )
+        if not isinstance(self.summary, str) or not self.summary.strip():
+            raise ValueError("summary không được rỗng.")
+
     @property
     def passed(self) -> bool:
         return all(item.passed for item in self.criteria)
+
+
+def parse_critique_payload(payload: object) -> Critique:
+    """Validate untrusted model JSON before it can affect loop termination."""
+    if not isinstance(payload, dict):
+        raise ValueError("Phản hồi Critic phải là một JSON object.")
+    if set(payload) != {"criteria", "summary"}:
+        raise ValueError("Phản hồi Critic phải chỉ có criteria và summary.")
+
+    raw_criteria = payload["criteria"]
+    if not isinstance(raw_criteria, list) or len(raw_criteria) != 3:
+        raise ValueError("criteria phải là danh sách có đúng ba phần tử.")
+
+    validated: dict[str, Criterion] = {}
+    for index, item in enumerate(raw_criteria, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Tiêu chí thứ {index} phải là JSON object.")
+        if set(item) != {"name", "passed", "comment"}:
+            raise ValueError(
+                f"Tiêu chí thứ {index} phải chỉ có name, passed và comment."
+            )
+
+        name = item["name"]
+        if not isinstance(name, str) or name not in CRITERION_NAMES:
+            raise ValueError(f"Tên tiêu chí không hợp lệ: {name!r}.")
+        if name in validated:
+            raise ValueError(f"Tiêu chí bị lặp: {name!r}.")
+
+        validated[name] = Criterion(
+            name=name,
+            passed=item["passed"],
+            comment=item["comment"],
+        )
+
+    missing = set(CRITERION_NAMES) - set(validated)
+    if missing:
+        raise ValueError(f"Thiếu tiêu chí: {', '.join(sorted(missing))}.")
+
+    summary = payload["summary"]
+    if not isinstance(summary, str) or not summary.strip():
+        raise ValueError("summary không được rỗng.")
+
+    return Critique(
+        tuple(validated[name] for name in CRITERION_NAMES),
+        summary.strip(),
+    )
 
 
 @dataclass(frozen=True)
@@ -130,14 +223,20 @@ class OpenAIProvider:
         if not self.api_key:
             raise ValueError("Thiếu biến môi trường OPENAI_API_KEY.")
 
-    def _request(self, instructions: str, user_input: str) -> str:
-        payload = json.dumps(
-            {
-                "model": self.model,
-                "instructions": instructions,
-                "input": user_input,
-            }
-        ).encode("utf-8")
+    def _request(
+        self,
+        instructions: str,
+        user_input: str,
+        text_format: dict[str, object] | None = None,
+    ) -> str:
+        request_body: dict[str, object] = {
+            "model": self.model,
+            "instructions": instructions,
+            "input": user_input,
+        }
+        if text_format is not None:
+            request_body["text"] = {"format": text_format}
+        payload = json.dumps(request_body).encode("utf-8")
         request = urllib.request.Request(
             "https://api.openai.com/v1/responses",
             data=payload,
@@ -186,10 +285,10 @@ Bản nháp:
         raw = self._request(
             "Bạn là Critic nghiêm khắc, cụ thể, không viết lại bài.",
             prompt,
+            text_format=CRITIQUE_TEXT_FORMAT,
         )
         parsed = json.loads(raw)
-        criteria = tuple(Criterion(**item) for item in parsed["criteria"])
-        return Critique(criteria, parsed["summary"])
+        return parse_critique_payload(parsed)
 
     def revise(self, draft: str, critique: Critique, round_number: int) -> str:
         comments = "\n".join(
